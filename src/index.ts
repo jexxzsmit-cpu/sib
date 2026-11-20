@@ -4,13 +4,13 @@ import { spawn } from "node:child_process";
 import { realpath, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import OpenAI from "openai";
+import { isSensitiveProjectPath, resolveProjectPath } from "./project-paths.js";
 
 const root = await realpath(process.cwd());
 const model = process.env.OPENAI_MODEL ?? "gpt-4.1-mini";
 const rl = createInterface({ input: stdin, output: stdout });
 const client = new OpenAI();
 const ignoredDirectories = new Set([".git", "node_modules", "dist", "build", "coverage"]);
-const sensitiveFilePattern = /(^|\/)(\.env(?:\..*)?|[^/]*(?:secret|credential|private.?key)[^/]*|[^/]*\.(?:pem|key|p12|pfx))$/i;
 const maxToolOutput = 40_000;
 
 const instructions = `You are CatHub Codex, a helpful coding assistant working in the current project.
@@ -24,6 +24,7 @@ const tools = [
   {
     type: "function",
     name: "list_files",
+    strict: true,
     description: "List project files, excluding dependencies, build output, and sensitive files.",
     parameters: {
       type: "object",
@@ -37,6 +38,7 @@ const tools = [
   {
     type: "function",
     name: "read_file",
+    strict: true,
     description: "Read a text file from the project, excluding sensitive files.",
     parameters: {
       type: "object",
@@ -50,18 +52,21 @@ const tools = [
   {
     type: "function",
     name: "git_diff",
+    strict: true,
     description: "Show the current project changes and working-tree status.",
     parameters: { type: "object", properties: {}, required: [], additionalProperties: false }
   },
   {
     type: "function",
     name: "run_tests",
+    strict: true,
     description: "Run the project's npm test script after asking for user approval.",
     parameters: { type: "object", properties: {}, required: [], additionalProperties: false }
   },
   {
     type: "function",
     name: "write_file",
+    strict: true,
     description: "Create or replace a project file after displaying a preview and obtaining user approval.",
     parameters: {
       type: "object",
@@ -76,6 +81,7 @@ const tools = [
   {
     type: "function",
     name: "create_pull_request",
+    strict: true,
     description: "Create a GitHub pull request with gh after obtaining explicit user approval.",
     parameters: {
       type: "object",
@@ -97,22 +103,6 @@ function getString(args: ToolArguments, key: string): string {
     throw new Error(`Invalid tool input: ${key} must be a string.`);
   }
   return value;
-}
-
-function isSensitive(relativePath: string): boolean {
-  return sensitiveFilePattern.test(relativePath.split(path.sep).join("/"));
-}
-
-function resolveProjectPath(input: string): string {
-  const resolved = path.resolve(root, input);
-  if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
-    throw new Error("That path is outside the project directory.");
-  }
-  const relative = path.relative(root, resolved);
-  if (isSensitive(relative)) {
-    throw new Error("Access to sensitive files is blocked.");
-  }
-  return resolved;
 }
 
 async function assertInsideProject(target: string, allowMissing = false): Promise<void> {
@@ -153,7 +143,7 @@ function runCommand(command: string, args: string[], cwd = root): Promise<string
 }
 
 async function listFiles(directory: string): Promise<string[]> {
-  const target = resolveProjectPath(directory);
+  const target = resolveProjectPath(root, directory);
   await assertInsideProject(target);
   const entries = await readdir(target, { withFileTypes: true });
   const results: string[] = [];
@@ -161,7 +151,7 @@ async function listFiles(directory: string): Promise<string[]> {
     if (entry.isSymbolicLink() || ignoredDirectories.has(entry.name)) continue;
     const fullPath = path.join(target, entry.name);
     const relative = path.relative(root, fullPath);
-    if (isSensitive(relative)) continue;
+    if (isSensitiveProjectPath(relative)) continue;
     if (entry.isDirectory()) {
       results.push(...await listFiles(relative));
     } else if (entry.isFile()) {
@@ -173,7 +163,7 @@ async function listFiles(directory: string): Promise<string[]> {
 }
 
 async function readProjectFile(file: string): Promise<string> {
-  const target = resolveProjectPath(file);
+  const target = resolveProjectPath(root, file);
   await assertInsideProject(target);
   const fileStat = await stat(target);
   if (!fileStat.isFile()) throw new Error("The requested path is not a file.");
@@ -187,7 +177,7 @@ async function approved(prompt: string): Promise<boolean> {
 }
 
 async function writeProjectFile(file: string, content: string): Promise<string> {
-  const target = resolveProjectPath(file);
+  const target = resolveProjectPath(root, file);
   await assertInsideProject(target, true);
   const existing = await readFile(target, "utf8").catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return "";

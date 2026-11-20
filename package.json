@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "test": "node --test"
+    "test": "tsx --test test/project-paths.test.ts"
   },
   "dependencies": {
     "openai": "^5.0.0"
